@@ -8,6 +8,8 @@
 #define DS3231_H
 
 #include <stdio.h>
+#include <time.h>
+
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 
@@ -33,24 +35,6 @@ enum rtc_register {
     DS3231_AGING_OFFSET_REG = 0x10u,
     DS3231_TEMPERATURE_REG = 0x11u
 };
-
-/*
- * Even if the RTC deals with 12-h formats, this library uses only 24-h
- * formats to read/write from/to the RTC. Any conversions to 12-h format
- * could be implemented later as separate functions if desired.
- * 
- * This library: assumes century is 2000, hour is alway entered in 24-h format, day 1 is Monday, day 7 is Sunday
- * DS years are 1900 to 2099. Here I assume century is 2000
- */
-typedef struct {
-    uint8_t hour;    // Hour (0-23)
-    uint8_t minutes; // Minutes (0-59)
-    uint8_t seconds; // Seconds (0-59)
-    uint8_t day;     // Day of the month (1-31)
-    uint8_t dotw;    // Day of the week (1-7, 1=Monday)
-    uint8_t month;   // Month (1-12, 1 = January)
-    uint16_t year;   // Year (2000-2099)
-} ds3231_datetime_t;
 
 typedef struct ds3231_rtc {
     i2c_inst_t *i2c_port;
@@ -138,9 +122,13 @@ void ds3231_set_sqw_mode(ds3231_rtc_t *rtc, ds3231_sqw_mode_t mode);
  * \param rtc Pointer to a ds3231_rtc_t structure
  * \param dt date to set
  */
-void ds3231_set_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt);
+void ds3231_set_datetime(ds3231_rtc_t *rtc, const struct tm *dt);
 
-void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt);
+void ds3231_set_time(ds3231_rtc_t *rtc, const time_t time);
+
+void ds3231_get_datetime(ds3231_rtc_t *rtc, struct tm *dt);
+
+time_t ds3231_get_time(ds3231_rtc_t *rtc);
 
 /*! \brief Format a ds3231_datetime_t structure into a ISO 8601 string
  * 
@@ -150,8 +138,7 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt);
  * \param buf_size The size of the passed-in buffer (at least 19)
  * \param dt The datetime to be converted
  */
-void ds3231_isoformat(char *buf, uint8_t buf_size,
-                      const ds3231_datetime_t *dt);
+void ds3231_isoformat(char *buf, uint8_t buf_size, const struct tm *dt);
 
 /*! \brief Format ds3231_datetime_t structure into a date string
  * 
@@ -159,8 +146,7 @@ void ds3231_isoformat(char *buf, uint8_t buf_size,
  * \param buf_size The size of the passed-in buffer (at least 10)
  * \param dt The datetime to be converted
  */
-void ds3231_str_date(char *buf, uint8_t buf_size,
-                     const ds3231_datetime_t *dt);
+void ds3231_str_date(char *buf, uint8_t buf_size, const struct tm *dt);
 
 /*! \brief Format ds3231_datetime_t structure into a time string
  * 
@@ -168,8 +154,7 @@ void ds3231_str_date(char *buf, uint8_t buf_size,
  * \param buf_size The size of the passed-in buffer (at least 8)
  * \param dt The datetime to be converted
  */
-void ds3231_str_time(char *buf, uint8_t buf_size,
-                     const ds3231_datetime_t *dt);
+void ds3231_str_time(char *buf, uint8_t buf_size, const struct tm *dt);
 
 /*! \brief Format ds3231_datetime_t structure into a ctime string
  * 
@@ -181,8 +166,7 @@ void ds3231_str_time(char *buf, uint8_t buf_size,
  * \param buf_size The size of the passed-in buffer (at least 25)
  * \param dt The datetime to be converted
  */
-void ds3231_ctime(char *buf, uint8_t buf_size,
-                  const ds3231_datetime_t *dt);
+void ds3231_ctime(char *buf, uint8_t buf_size, const struct tm *dt);
 
 /*! \brief Check if the oscillator has stopped
  * 

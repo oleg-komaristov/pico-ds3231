@@ -5,6 +5,7 @@
  */
 
 #include "ds3231.h"
+#include <time.h>
 
 #define STATUS_OSF (1 << 7)
 #define STATUS_AL1 (1 << 0)
@@ -18,6 +19,8 @@ static const char *DS3231_WDAYS[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", 
 static const char *DS3231_MONTHS[12] = {"Jan", "Feb", "Mar", "Apr",
                                         "May", "Jun", "Jul", "Aug",
                                         "Sep", "Oct", "Nov", "Dec"};
+
+static struct tm shared_dt;
 
 void ds3231_init(ds3231_rtc_t *rtc, i2c_inst_t *i2c_port,
                  uint8_t i2c_sda_pin, uint8_t i2c_scl_pin) {
@@ -85,17 +88,17 @@ void ds3231_set_sqw_mode(ds3231_rtc_t *rtc, ds3231_sqw_mode_t mode) {
     }
 }
 
-void ds3231_set_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
+void ds3231_set_datetime(ds3231_rtc_t *rtc, const struct tm *dt) {
     uint8_t buffer[8];
     buffer[0] = DS3231_DATETIME_REG;
 
-    buffer[1] = DEC2BCD(dt->seconds);
-    buffer[2] = DEC2BCD(dt->minutes);
-    buffer[3] = DEC2BCD(dt->hour);
-    buffer[4] = dt->dotw & 0x07;
-    buffer[5] = DEC2BCD(dt->day);
-    buffer[6] = DEC2BCD(dt->month);
-    buffer[7] = DEC2BCD(dt->year - 2000);
+    buffer[1] = DEC2BCD(dt->tm_sec);
+    buffer[2] = DEC2BCD(dt->tm_min);
+    buffer[3] = DEC2BCD(dt->tm_hour);
+    buffer[4] = dt->tm_wday & 0x07;
+    buffer[5] = DEC2BCD(dt->tm_mday);
+    buffer[6] = DEC2BCD(dt->tm_mon);
+    buffer[7] = DEC2BCD(dt->tm_year - 100);
 
     i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buffer, 8, false);
 
@@ -114,7 +117,12 @@ void ds3231_set_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     }
 }
 
-void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
+void ds3231_set_time(ds3231_rtc_t *rtc, const time_t time) {
+    struct tm *utc = gmtime(&time);
+    ds3231_set_datetime(rtc, utc);
+}
+
+void ds3231_get_datetime(ds3231_rtc_t *rtc, struct tm *dt) {
     uint8_t buffer[7];
     uint8_t low, high, val;
     uint8_t reg = DS3231_DATETIME_REG;
@@ -126,11 +134,11 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     
     /* Seconds */
     val = buffer[0];
-    dt->seconds = ((val >> 4) * 10) + (val & 0x0f);
+    dt->tm_sec = ((val >> 4) * 10) + (val & 0x0f);
 
     /* Minutes */
     val = buffer[1];
-    dt->minutes = ((val >> 4) * 10) + (val & 0x0f);
+    dt->tm_min = ((val >> 4) * 10) + (val & 0x0f);
 
     /* Hours (1~12 or 0~23) */
     val = buffer[2];
@@ -143,19 +151,19 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
         high = ((val & 0x10) >> 4) * 10;
         // Bits 3-0 are hour
         low = val & 0x0f;
-        dt->hour = high + low;
+        dt->tm_hour = high + low;
     } else {  // 24-h mode
         // Bits 5-4 are 20/10 hour
         high = ((val & 0x30) >> 4) * 10;
         // Bits 3-0 are hour
         low = val & 0x0f;
-        dt->hour = high + low;
+        dt->tm_hour = high + low;
    }
 
     /* Day of the week (1~7) */
     val = buffer[3];
     // Bits 2-0 are day of the week
-    dt->dotw = val & 0x07;
+    dt->tm_wday = val & 0x07;
     
     /* Date (day 1~31) */
     val = buffer[4];
@@ -163,7 +171,7 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     high = ((val >> 4) * 10);
     // Bits 3-0 are date
     low = val & 0x0f;
-    dt->day = high + low;
+    dt->tm_mday = high + low;
 
     /* Month (1-12) */
     val = buffer[5];
@@ -171,7 +179,7 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     high = ((val & 0x10) >> 4) * 10;
     // Bits 3-0 are month
     low = val & 0x0f;
-    dt->month = high + low;
+    dt->tm_mon = high + low;
     
     /* Century (0~1) */
     // Bit 7 in same value as month
@@ -183,35 +191,37 @@ void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     high = ((val & 0xf0) >> 4) * 10;
     // Bits 3-0 are year
     low = val & 0x0f;
-    dt->year = 2000 + high + low;
+    dt->tm_year = 100 + high + low;
 }
 
-void ds3231_isoformat(char *buf, uint8_t buf_size,
-                      const ds3231_datetime_t *dt) {
+time_t ds3231_get_time(ds3231_rtc_t *rtc) {
+    ds3231_get_datetime(rtc, &shared_dt);
+    shared_dt.tm_isdst = 0;
+    return mktime(&shared_dt);
+}
+
+void ds3231_isoformat(char *buf, uint8_t buf_size, const struct tm *dt) {
     snprintf(buf, buf_size, "%u-%02u-%02uT%02u:%02u:%02u",
-            dt->year, dt->month, dt->day, dt->hour, dt->minutes, dt->seconds);
+            dt->tm_year + 1900, dt->tm_mon, dt->tm_mday, dt->tm_hour, dt->tm_min, dt->tm_sec);
 }
 
-void ds3231_str_date(char *buf, uint8_t buf_size,
-                     const ds3231_datetime_t *dt) {
-    snprintf(buf, buf_size, "%u-%02u-%02u", dt->year, dt->month,
-             dt->day);
+void ds3231_str_date(char *buf, uint8_t buf_size, const struct tm *dt) {
+    snprintf(buf, buf_size, "%u-%02u-%02u", dt->tm_year + 1900, dt->tm_mon,
+             dt->tm_mday);
 }
 
-void ds3231_str_time(char *buf, uint8_t buf_size,
-                     const ds3231_datetime_t *dt) {
-    snprintf(buf, buf_size, "%02u:%02u:%02u", dt->hour, dt->minutes,
-             dt->seconds);
+void ds3231_str_time(char *buf, uint8_t buf_size, const struct tm *dt) {
+    snprintf(buf, buf_size, "%02u:%02u:%02u", dt->tm_hour, dt->tm_min,
+             dt->tm_sec);
 }
 
-void ds3231_ctime(char *buf, uint8_t buf_size,
-                  const ds3231_datetime_t *dt) {
+void ds3231_ctime(char *buf, uint8_t buf_size, const struct tm *dt) {
     // Day of the week and months start from 1 in the dt structure. We
     // need to subtract 1 from these values to match the correct
     // indices.
     snprintf(buf, buf_size, "%s %s %02u %02u:%02u:%02u %u",
-        DS3231_WDAYS[dt->dotw-1], DS3231_MONTHS[dt->month-1], dt->day,
-        dt->hour, dt->minutes, dt->seconds, dt->year);
+        DS3231_WDAYS[dt->tm_wday], DS3231_MONTHS[dt->tm_mon-1], dt->tm_mday,
+        dt->tm_hour, dt->tm_min, dt->tm_sec, dt->tm_year + 1900);
 }
 
 bool ds3231_oscillator_is_stopped(ds3231_rtc_t *rtc) {
