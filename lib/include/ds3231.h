@@ -17,8 +17,12 @@
  *
 */
 
-#define DS3231_I2C_ADDRESS 0x68
-#define DS3231_I2C_FREQ 100 * 1000
+#ifndef DS3231_I2C_ADDRESS
+	#define DS3231_I2C_ADDRESS 0x68
+#endif
+#ifndef DS3231_I2C_FREQ
+	#define DS3231_I2C_FREQ 100 * 1000
+#endif
 
 enum rtc_register {
     DS3231_DATETIME_REG = 0x00u,   
@@ -37,7 +41,7 @@ enum rtc_register {
  * 
  * This library: assumes century is 2000, hour is alway entered in 24-h format, day 1 is Monday, day 7 is Sunday
  * DS years are 1900 to 2099. Here I assume century is 2000
-*/
+ */
 typedef struct {
     uint8_t hour;    // Hour (0-23)
     uint8_t minutes; // Minutes (0-59)
@@ -48,7 +52,6 @@ typedef struct {
     uint16_t year;   // Year (2000-2099)
 } ds3231_datetime_t;
 
-
 typedef struct ds3231_rtc {
     i2c_inst_t *i2c_port;
     uint8_t i2c_addr;
@@ -56,27 +59,88 @@ typedef struct ds3231_rtc {
     uint8_t i2c_scl_pin;
 } ds3231_rtc_t;
 
-static const char *DS3231_WDAYS[7] = {"Mon", "Tue", "Wed", "Thu", "Fri",
-                                      "Sat", "Sun"};
+typedef enum {
+    DS3231_ACTIVE_TIME   = 1 << 0,
+    DS3231_ACTIVE_SQUARE = 1 << 1
+} ds3231_active_t;
 
-static const char *DS3231_MONTHS[12] = {"Jan", "Feb", "Mar", "Apr",
-                                        "May", "Jun", "Jul", "Aug",
-                                        "Sep", "Oct", "Nov", "Dec"};
+typedef enum  {
+    DS3231_AL1_EVERY_SECOND   = 0xF,
+    DS3231_AL1_MATCH_SECONDS  = 0xE,
+    DS3231_AL1_MATCH_M_S      = 0xC,
+    DS3231_AL1_MATCH_H_M_S    = 0x8,
+    DS3231_AL1_MATCH_DT_H_M_S = 0x0,
+    DS3231_AL1_MATCH_DY_H_M_S = 0x10
+} ds3231_alarm1_mode_t;
+
+typedef enum {
+    DS3231_AL2_EVERY_MINUTE   = 0xE,
+    DS3231_AL2_MATCH_M        = 0xC,
+    DS3231_AL2_MATCH_H_M      = 0x8,
+    DS3231_AL2_MATCH_DT_H_M   = 0x0,
+    DS3231_AL2_MATCH_DY_H_M   = 0x10
+} ds3231_alarm2_mode_t;
+
+typedef enum {
+    DS3231_ALARM1,
+    DS3231_ALARM2
+} ds3231_alarm_t;
+
+typedef enum {
+    DS3231_SQW_MODE_SIGNAL,
+    DS3231_SQW_MODE_ALARM
+} ds3231_sqw_mode_t;
+
+typedef struct {
+    uint8_t day;
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+    union {
+        ds3231_alarm1_mode_t alarm1;
+        ds3231_alarm2_mode_t alarm2;
+    } mode;
+} ds3231_alarm_time_t;
 
 /*! \brief Initialise a DS321 real-time clock
  *
+ * \param rtc Pointer to a ds3231_rtc_t structure
  * \param i2c_port The I2C instance, i2c0 or i2c1
  * \param i2c_addr 7-bit address of the DS3231 device
+ */
+void ds3231_init(ds3231_rtc_t *rtc, i2c_inst_t *i2c_port,
+                 uint8_t i2c_sda_pin, uint8_t i2c_scl_pin);
+
+/*! \brief Sets components active on battery power.
+ * 
+ * \param active Active components.
+ */
+void ds3231_set_on_battery(ds3231_rtc_t *rtc, ds3231_active_t active);
+
+/*! \brief Reads the current SQW output mode.
+ * 
  * \param rtc Pointer to a ds3231_rtc_t structure
-*/
-void ds3231_init(i2c_inst_t *i2c_port, uint8_t i2c_sda_pin,
-                 uint8_t i2c_scl_pin, ds3231_rtc_t *rtc);
+ * \return Current mode of SQW pin.
+ */
+ds3231_sqw_mode_t ds3231_get_sqw_mode(ds3231_rtc_t *rtc);
 
-/*! 
-*/
-void ds3231_set_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc);
+/*! \brief Sets the SQW output mode.
+ * 
+ * \param rtc Pointer to a ds3231_rtc_t structure
+ * \param mode SQW pin mode.
+ */
+void ds3231_set_sqw_mode(ds3231_rtc_t *rtc, ds3231_sqw_mode_t mode);
 
-void ds3231_get_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc);
+/*! \brief Set date time to RTC.
+ *
+ * \note This method resets the OSF bit.
+ * 
+ * \param rtc Pointer to a ds3231_rtc_t structure
+ * \param dt date to set
+ */
+void ds3231_set_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt);
+
+void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt);
 
 /*! \brief Format a ds3231_datetime_t structure into a ISO 8601 string
  * 
@@ -85,29 +149,27 @@ void ds3231_get_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc);
  * \param buf Character buffer to accept generated string
  * \param buf_size The size of the passed-in buffer (at least 19)
  * \param dt The datetime to be converted
-*/
- void ds3231_isoformat(char *buf, uint8_t buf_size,
-                       const ds3231_datetime_t *dt);
+ */
+void ds3231_isoformat(char *buf, uint8_t buf_size,
+                      const ds3231_datetime_t *dt);
 
 /*! \brief Format ds3231_datetime_t structure into a date string
  * 
  * \param buf Character buffer to accept generated string
  * \param buf_size The size of the passed-in buffer (at least 10)
  * \param dt The datetime to be converted
-*/
+ */
 void ds3231_str_date(char *buf, uint8_t buf_size,
                      const ds3231_datetime_t *dt);
-
 
 /*! \brief Format ds3231_datetime_t structure into a time string
  * 
  * \param buf Character buffer to accept generated string
  * \param buf_size The size of the passed-in buffer (at least 8)
  * \param dt The datetime to be converted
-*/
+ */
 void ds3231_str_time(char *buf, uint8_t buf_size,
                      const ds3231_datetime_t *dt);
-
 
 /*! \brief Format ds3231_datetime_t structure into a ctime string
  * 
@@ -118,25 +180,38 @@ void ds3231_str_time(char *buf, uint8_t buf_size,
  * \param buf Character buffer to accept generated string
  * \param buf_size The size of the passed-in buffer (at least 25)
  * \param dt The datetime to be converted
-*/
+ */
 void ds3231_ctime(char *buf, uint8_t buf_size,
                   const ds3231_datetime_t *dt);
 
 /*! \brief Check if the oscillator has stopped
  * 
  * \param rtc Pointer to the ds3231_rtc_t structure
-*/
+ */
 bool ds3231_oscillator_is_stopped(ds3231_rtc_t *rtc);
 
 /*! \brief Read the temperature
  * 
- * \param val Pointer to the temperature variable
  * \param rtc Pointer to the ds3231_rtc_t structure
  * 
  * Note that the temperature registers are updated every 64 seconds. It
  * thus makes little sense to read the temperature register more often
  * than this.
-*/
-void ds3231_get_temperature(float *val, ds3231_rtc_t *rtc);
+ * 
+ * \return Temperature in Celsius degrees.
+ */
+float ds3231_get_temperature(ds3231_rtc_t *rtc);
+
+void ds3231_set_alarm(ds3231_rtc_t *rtc, ds3231_alarm_t alarm, const ds3231_alarm_time_t *time, _Bool active);
+
+ds3231_alarm_time_t ds3231_get_alarm_time(ds3231_rtc_t *rtc, ds3231_alarm_t alarm);
+
+_Bool ds3231_get_alarm_active(ds3231_rtc_t *rtc, ds3231_alarm_t alarm);
+
+void ds3231_set_alarm_active(ds3231_rtc_t *rtc, ds3231_alarm_t alarm, _Bool state);
+
+_Bool ds3231_is_alarm_fired(ds3231_rtc_t *rtc, ds3231_alarm_t alarm);
+
+void ds3231_clear_alarm(ds3231_rtc_t *rtc, ds3231_alarm_t alarm);
 
 #endif

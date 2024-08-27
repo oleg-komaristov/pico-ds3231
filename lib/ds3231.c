@@ -5,10 +5,22 @@
  */
 
 #include "ds3231.h"
- 
 
-void ds3231_init(i2c_inst_t *i2c_port, uint8_t i2c_sda_pin,
-                 uint8_t i2c_scl_pin, ds3231_rtc_t *rtc) {
+#define STATUS_OSF (1 << 7)
+#define STATUS_AL1 (1 << 0)
+#define STATUS_AL2 (1 << 1)
+
+#define DEC2BCD(__value__) ((__value__) / 10 * 16 + ((__value__) % 10))
+#define BCD2DEC(__value__) ((__value__) / 16 * 10 + ((__value__) % 16))
+
+static const char *DS3231_WDAYS[7] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+
+static const char *DS3231_MONTHS[12] = {"Jan", "Feb", "Mar", "Apr",
+                                        "May", "Jun", "Jul", "Aug",
+                                        "Sep", "Oct", "Nov", "Dec"};
+
+void ds3231_init(ds3231_rtc_t *rtc, i2c_inst_t *i2c_port,
+                 uint8_t i2c_sda_pin, uint8_t i2c_scl_pin) {
     rtc->i2c_port = i2c_port;
     rtc->i2c_addr = DS3231_I2C_ADDRESS;
     rtc->i2c_sda_pin = i2c_sda_pin;
@@ -19,56 +31,73 @@ void ds3231_init(i2c_inst_t *i2c_port, uint8_t i2c_sda_pin,
     gpio_set_function(i2c_scl_pin, GPIO_FUNC_I2C);
     gpio_pull_up(i2c_sda_pin);
     gpio_pull_up(i2c_scl_pin);
+
+    ds3231_set_on_battery(rtc, DS3231_ACTIVE_TIME);
 };
 
-void ds3231_set_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc) {
-    uint8_t val, low, high;
+void ds3231_set_on_battery(ds3231_rtc_t *rtc, ds3231_active_t active) {
+    uint8_t reg = DS3231_CONTROL_REG;
+    uint8_t state;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &state, 1, true);
+    uint8_t new_state = state;
+    if (DS3231_ACTIVE_TIME == (active & DS3231_ACTIVE_TIME))
+    	new_state &= ~(1 << 7);
+    else
+        new_state |= 1 << 7;
+    if (DS3231_ACTIVE_SQUARE == (active & DS3231_ACTIVE_SQUARE))
+    	new_state &= ~(1 << 6);
+    else
+        new_state |= 1 << 6;
+    if (state != new_state) {
+		uint8_t buf[] = {DS3231_CONTROL_REG, state};
+		i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    }
+}
+
+ds3231_sqw_mode_t ds3231_get_sqw_mode(ds3231_rtc_t *rtc) {
+    uint8_t reg = DS3231_CONTROL_REG;
+    uint8_t state;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &state, 1, true);
+    return 0 < (state & 0x2) ? DS3231_SQW_MODE_ALARM : DS3231_SQW_MODE_SIGNAL;
+}
+
+void ds3231_set_sqw_mode(ds3231_rtc_t *rtc, ds3231_sqw_mode_t mode) {
+    uint8_t reg = DS3231_CONTROL_REG;
+    uint8_t state;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &state, 1, true);
+    uint8_t new_state = state;
+    switch (mode) {
+        case DS3231_SQW_MODE_ALARM:
+            new_state |= 0x4;
+            new_state &= ~0x18;
+            break;
+        case DS3231_SQW_MODE_SIGNAL:
+            new_state &= ~0x4;
+            new_state |= 0x18;
+            break;
+    }
+    if (new_state != state) {
+        uint8_t buf[] = {DS3231_CONTROL_REG, new_state};
+        i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    }
+}
+
+void ds3231_set_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     uint8_t buffer[8];
     buffer[0] = DS3231_DATETIME_REG;
 
-    /* Seconds */
-    low = dt->seconds % 10;
-    high = (dt->seconds - low) / 10;
-    buffer[1] = (high << 4) | low;
-
-    /* Minutes */
-    low = dt->minutes % 10;
-    high = (dt->minutes - low) / 10;
-    buffer[2] = (high << 4) | low;
-
-    /* Hours */
-    // Do it all in 24-h mode. Bit 6 set to 0 is 24-h mode so there is
-    // no need to do anything about this.
-    low = dt->hour % 10;
-    high = (dt->hour - low) / 10;
-    buffer[3] = (high << 4) | low;
-
-    /* Day of week (1~7) */
+    buffer[1] = DEC2BCD(dt->seconds);
+    buffer[2] = DEC2BCD(dt->minutes);
+    buffer[3] = DEC2BCD(dt->hour);
     buffer[4] = dt->dotw & 0x07;
+    buffer[5] = DEC2BCD(dt->day);
+    buffer[6] = DEC2BCD(dt->month);
+    buffer[7] = DEC2BCD(dt->year - 2000);
 
-    /* Date (day 1~31) */
-    low = dt->day % 10;
-    high = (dt->day - low) / 10;
-    buffer[5] = (high << 4) | low;
-
-    /* Month (1-12) */
-    low = dt->month % 10;
-    high = (dt->month - low) / 10;
-    buffer[6] = (high << 4) | low;
-
-    /* Century (0~1) */
-    // Bit 7 in same value as month
-    // century = (val & 0x80) >> 7;
-
-    /* Year (0~99) */
-    // Takes only last two digits as it assumes year is between 2000 and
-    // 2099.
-    low = dt->year % 10;
-    high = ((dt->year % 100) - low) / 10;
-    buffer[7] = (high << 4) | low;
-
-    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buffer, 8,
-                       false);
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buffer, 8, false);
 
     // After updating the date and time, set the oscillator stop flag
     // (OSF) to 0. Else, it remains at logic 1.
@@ -78,12 +107,14 @@ void ds3231_set_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc) {
     i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
     i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &status, 1, true);
     // Unset status bit 7.
-    status &= ~(1 << 7);
-    uint8_t buf[] = {DS3231_STATUS_REG, status};
-    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    const uint8_t new_status = status & (~STATUS_OSF);
+    if (new_status != status) {
+		uint8_t buf[] = {DS3231_STATUS_REG, new_status};
+		i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    }
 }
 
-void ds3231_get_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc) {
+void ds3231_get_datetime(ds3231_rtc_t *rtc, ds3231_datetime_t *dt) {
     uint8_t buffer[7];
     uint8_t low, high, val;
     uint8_t reg = DS3231_DATETIME_REG;
@@ -156,7 +187,7 @@ void ds3231_get_datetime(ds3231_datetime_t *dt, ds3231_rtc_t *rtc) {
 }
 
 void ds3231_isoformat(char *buf, uint8_t buf_size,
-                       const ds3231_datetime_t *dt) {
+                      const ds3231_datetime_t *dt) {
     snprintf(buf, buf_size, "%u-%02u-%02uT%02u:%02u:%02u",
             dt->year, dt->month, dt->day, dt->hour, dt->minutes, dt->seconds);
 }
@@ -189,10 +220,10 @@ bool ds3231_oscillator_is_stopped(ds3231_rtc_t *rtc) {
     // Oscillator Stop Flag: Bit 7 in status register
     i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
     i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &buf, 1, false);
-    return (buf >> 7) & 0b1;
+    return (buf & STATUS_OSF) >> 7;
 }
 
-void ds3231_get_temperature(float *val, ds3231_rtc_t *rtc) {
+float ds3231_get_temperature(ds3231_rtc_t *rtc) {
     uint8_t buffer[2];
     uint8_t reg = DS3231_TEMPERATURE_REG;
     float frac;
@@ -212,12 +243,235 @@ void ds3231_get_temperature(float *val, ds3231_rtc_t *rtc) {
     frac = (float)(buffer[1] >> 6);
     frac *= 0.25;
     
+    float result;
     if ((buffer[0] >> 7) & 1) {
         // If bit 7 is set, the number is negative
-        *val = (float)((~buffer[0]) + 1);
+        result = (float)((~buffer[0]) + 1);
     } else {
         // If bit 7 is not set, the number is positive.
-        *val = (float)buffer[0];
+        result = (float)buffer[0];
     }
-    *val += frac;
+    result += frac;
+    return result;
+}
+
+void ds3231_set_alarm(ds3231_rtc_t *rtc, ds3231_alarm_t alarm, const ds3231_alarm_time_t *time, _Bool active) {
+    uint8_t second = DEC2BCD(time->second),
+            minute = DEC2BCD(time->minute),
+            hour = DEC2BCD(time->hour),
+            day = DEC2BCD(time->day);
+    uint8_t buffer[10] = {0},
+            bufIdx = 0;
+    switch (alarm) {
+        case DS3231_ALARM1: {
+            buffer[bufIdx++] = DS3231_ALARM1_REG;
+            switch (time->mode.alarm1) {
+                case DS3231_AL1_EVERY_SECOND:
+                    second |= 0b10000000;
+                    minute |= 0b10000000;
+                    hour |= 0b10000000;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL1_MATCH_SECONDS:
+                    second &= 0b01111111;
+                    minute |= 0b10000000;
+                    hour |= 0b10000000;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL1_MATCH_M_S:
+                    second &= 0b01111111;
+                    minute &= 0b01111111;
+                    hour |= 0b10000000;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL1_MATCH_H_M_S:
+                    second &= 0b01111111;
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL1_MATCH_DT_H_M_S:
+                    second &= 0b01111111;
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day &= 0b01111111;
+                    break;
+
+                case DS3231_AL1_MATCH_DY_H_M_S:
+                    second &= 0b01111111;
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day &= 0b01111111;
+                    day |= 0b01000000;
+                    break;
+            }
+            buffer[bufIdx++] = second;
+        } break;
+        case DS3231_ALARM2: {
+            buffer[bufIdx++] = DS3231_ALARM2_REG;
+            switch (time->mode.alarm2) {
+                case DS3231_AL2_EVERY_MINUTE:
+                    minute |= 0b10000000;
+                    hour |= 0b10000000;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL2_MATCH_M:
+                    minute &= 0b01111111;
+                    hour |= 0b10000000;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL2_MATCH_H_M:
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day |= 0b10000000;
+                    break;
+
+                case DS3231_AL2_MATCH_DT_H_M:
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day &= 0b01111111;
+                    break;
+
+                case DS3231_AL2_MATCH_DY_H_M:
+                    minute &= 0b01111111;
+                    hour &= 0b01111111;
+                    day &= 0b01111111;
+                    day |= 0b01000000;
+                    break;
+            }
+        } break;
+    }
+    buffer[bufIdx++] = minute;
+    buffer[bufIdx++] = hour;
+    buffer[bufIdx++] = day;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buffer, bufIdx, false);
+    ds3231_clear_alarm(rtc, alarm);
+    ds3231_set_alarm_active(rtc, alarm, active);
+}
+
+ds3231_alarm_time_t ds3231_get_alarm_time(ds3231_rtc_t *rtc, ds3231_alarm_t alarm) {
+    uint8_t reg, length;
+    switch (alarm) {
+        case DS3231_ALARM1:
+            reg = DS3231_ALARM1_REG;
+            length = 4;
+            break;
+        case DS3231_ALARM2:
+            reg = DS3231_ALARM1_REG;
+            length = 3;
+            break;
+    }
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    uint8_t value[4] = {0};
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, value, length, true);
+    ds3231_alarm_time_t result;
+    result.day = BCD2DEC(value[0]);
+    result.hour = BCD2DEC(value[1]);
+    result.minute = BCD2DEC(value[2]);
+    uint8_t mode = 0;
+    switch (alarm) {
+        case DS3231_ALARM1:
+            result.second = BCD2DEC(value[3]);
+            mode |= ((value[3] & 0b01000000) >> 6);
+            mode |= ((value[2] & 0b01000000) >> 5);
+            mode |= ((value[1] & 0b01000000) >> 4);
+            mode |= ((value[0] & 0b01000000) >> 3);
+            mode |= ((value[0] & 0b00100000) >> 1);
+            result.mode.alarm1 = (ds3231_alarm1_mode_t)mode;
+            break;
+        case DS3231_ALARM2:
+            result.second = 0;
+            mode |= ((value[2] & 0b01000000) >> 5);
+            mode |= ((value[1] & 0b01000000) >> 4);
+            mode |= ((value[0] & 0b01000000) >> 3);
+            mode |= ((value[0] & 0b00100000) >> 1);
+            result.mode.alarm2 = (ds3231_alarm2_mode_t)mode;
+            break;
+    }
+    return result;
+}
+
+_Bool ds3231_get_alarm_active(ds3231_rtc_t *rtc, ds3231_alarm_t alarm) {
+    uint8_t reg = DS3231_CONTROL_REG;
+    uint8_t value;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &value, 1, true);
+    uint8_t bit;
+    switch (alarm) {
+        case DS3231_ALARM1:
+            bit = 0x1;
+        break;
+        case DS3231_ALARM2:
+            bit = 0x2;
+        break;
+    }
+    return 0 < (value & bit);
+}
+
+void ds3231_set_alarm_active(ds3231_rtc_t *rtc, ds3231_alarm_t alarm, _Bool state) {
+    uint8_t reg = DS3231_CONTROL_REG;
+    uint8_t value;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &value, 1, true);
+    uint8_t bit;
+    switch (alarm) {
+        case DS3231_ALARM1:
+            bit = 0x1;
+        break;
+        case DS3231_ALARM2:
+            bit = 0x2;
+        break;
+    }
+    uint8_t new_value = value;
+    if (state)
+        new_value |= bit;
+    else
+        new_value &= ~bit;
+
+    if (new_value != value) {
+        uint8_t buf[] = {DS3231_CONTROL_REG, new_value};
+        i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    }
+}
+
+_Bool ds3231_is_alarm_fired(ds3231_rtc_t *rtc, ds3231_alarm_t alarm) {
+	uint8_t reg = DS3231_STATUS_REG;
+    uint8_t status, bit;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &status, 1, true);
+    switch (alarm) {
+    	case DS3231_ALARM1:
+            bit = 0x1;
+        break;
+        case DS3231_ALARM2:
+            bit = 0x2;
+        break;
+    }
+    return 0 < (status & bit);
+}
+
+void ds3231_clear_alarm(ds3231_rtc_t *rtc, ds3231_alarm_t alarm) {
+	uint8_t reg = DS3231_STATUS_REG;
+    uint8_t status, bit;
+    i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, &reg, 1, true);
+    i2c_read_blocking(rtc->i2c_port, rtc->i2c_addr, &status, 1, true);
+    switch (alarm) {
+    	case DS3231_ALARM1:
+            bit = 0x1;
+        break;
+        case DS3231_ALARM2:
+            bit = 0x2;
+        break;
+    }
+    const uint8_t new_status = status & (~bit);
+    if (new_status != status) {
+		uint8_t buf[] = {DS3231_STATUS_REG, new_status};
+		i2c_write_blocking(rtc->i2c_port, rtc->i2c_addr, buf, 2, false);
+    }
 }
